@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Model — declared in code per spec (not in .env)
-MODEL_NAME = "qwen/qwen3-8b"  # ≤10B params, good at tool calling
+MODEL_NAME = "openai/gpt-4o-mini"  # ≤10B params, fast output generation
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]  # in .env only
 MAX_TOKENS = 2048

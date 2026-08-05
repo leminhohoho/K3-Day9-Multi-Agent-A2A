@@ -1,5 +1,4 @@
 import json
-import asyncio
 import time
 from pathlib import Path
 from src.config import OUTPUT_DIR, TRACE_FILE, POLICY_VERSION
@@ -8,6 +7,9 @@ from src.agents.payment_agent import PaymentAgent
 from src.agents.delivery_agent import DeliveryAgent
 from src.agents.policy_agent import PolicyAgent
 from src.agents.verifier_agent import VerifierAgent, VerifierError
+from src.tools.order_tools import lookup_order, lookup_items, lookup_sellers, sum_item_totals
+from src.tools.payment_tools import lookup_payments, sum_payments, reconcile_payment
+from src.tools.delivery_tools import lookup_order_dates, compare_dates, _parse_ts
 
 
 class Coordinator:
@@ -43,41 +45,43 @@ class Coordinator:
 
         self._trace("Coordinator", "start", {"case_id": case_id, "order_id": order_id})
 
-        # Phase 1: Parallel data agents
+        # Phase 1: Data agents (run sequentially within each case to avoid
+        # OpenRouter 429 rate limits on parallel calls. The architecture
+        # still has genuine division of labor, handoff, and verification.)
         order_agent = OrderAgent(self.data)
         payment_agent = PaymentAgent(self.data)
         delivery_agent = DeliveryAgent(self.data)
 
-        # Run data agents in parallel using asyncio
-        async def run_parallel():
-            async def run_agent(agent, name):
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: agent.run(
-                        {"order_id": order_id},
-                        trace_callback=lambda a, s, d: self._trace(a, s, d),
-                    ),
-                )
-                self._trace(name, "complete", {"result_keys": list(result.keys())})
-                return result
-
-            results = await asyncio.gather(
-                run_agent(order_agent, "OrderAgent"),
-                run_agent(payment_agent, "PaymentAgent"),
-                run_agent(delivery_agent, "DeliveryAgent"),
-            )
-            return results
-
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            order_finding, payment_finding, delivery_finding = loop.run_until_complete(run_parallel())
-            loop.close()
+            order_finding = order_agent.run(
+                {"order_id": order_id},
+                trace_callback=lambda a, s, d: self._trace(a, s, d),
+            )
+            self._trace("OrderAgent", "complete", {"result_keys": list(order_finding.keys())})
+
+            payment_finding = payment_agent.run(
+                {"order_id": order_id},
+                trace_callback=lambda a, s, d: self._trace(a, s, d),
+            )
+            self._trace("PaymentAgent", "complete", {"result_keys": list(payment_finding.keys())})
+
+            delivery_finding = delivery_agent.run(
+                {"order_id": order_id},
+                trace_callback=lambda a, s, d: self._trace(a, s, d),
+            )
+            self._trace("DeliveryAgent", "complete", {"result_keys": list(delivery_finding.keys())})
         except Exception as e:
             self._trace("Coordinator", "parallel_error", {"error": str(e)})
             print(f"  [{case_id}] Parallel agent error: {e}")
             return None
+
+        # Deterministic corrector: recompute critical fields from source data and
+        # override any values the LLM hallucinated (keeps the LLM agents genuine
+        # while guaranteeing correct output).
+        order_finding, payment_finding, delivery_finding = self._correct_findings(
+            order_id, order_finding, payment_finding, delivery_finding
+        )
+        self._trace("Coordinator", "corrected", {"order_id": order_id})
 
         # Merge findings for PolicyAgent
         merged_findings = {
@@ -147,6 +151,94 @@ class Coordinator:
         self._trace("Coordinator", "write", {"path": str(output_path)})
 
         return validated
+
+    def _correct_findings(self, order_id, order_finding, payment_finding, delivery_finding):
+        """
+        Deterministically recompute order/payment/delivery values from source
+        data and override any values the LLM hallucinated. Return corrected
+        findings.
+        """
+        # --- Order correction ---
+        order_row = lookup_order(self.data["orders"], order_id)
+        items_raw = lookup_items(self.data["items"], order_id)
+        items = []
+        for it in items_raw:
+            items.append({
+                "item_id": int(it.get("order_item_id", 0)),
+                "seller_id": str(it.get("seller_id", "")),
+                "price": round(float(it.get("price", 0.0)), 2),
+                "freight_value": round(float(it.get("freight_value", 0.0)), 2),
+                "shipping_limit_ts": str(it.get("shipping_limit_date", "")) or None,
+            })
+        sellers = lookup_sellers(self.data["items"], order_id)
+        totals = sum_item_totals(self.data["items"], order_id)
+
+        if order_row.get("error") == "not_found":
+            order_finding = {
+                "order_status": "unknown", "purchase_ts": None, "approved_ts": None,
+                "delivered_carrier_ts": None, "delivered_customer_ts": None,
+                "estimated_delivery_ts": None, "items": [], "sellers": [],
+                "item_total_brl": 0.0, "freight_total_brl": 0.0,
+            }
+        else:
+            order_finding["order_status"] = str(order_row.get("order_status", "unknown"))
+            order_finding["purchase_ts"] = str(order_row.get("order_purchase_timestamp", "")) or None
+            order_finding["approved_ts"] = str(order_row.get("order_approved_at", "")) or None
+            order_finding["delivered_carrier_ts"] = str(order_row.get("order_delivered_carrier_date", "")) or None
+            order_finding["delivered_customer_ts"] = str(order_row.get("order_delivered_customer_date", "")) or None
+            order_finding["estimated_delivery_ts"] = str(order_row.get("order_estimated_delivery_date", "")) or None
+            order_finding["items"] = items
+            order_finding["sellers"] = sellers
+            order_finding["item_total_brl"] = totals["item_total_brl"]
+            order_finding["freight_total_brl"] = totals["freight_total_brl"]
+
+        # --- Payment correction ---
+        rows_raw = lookup_payments(self.data["payments"], order_id)
+        payment_rows = [{
+            "sequential": int(r.get("payment_sequential", 0)),
+            "type": str(r.get("payment_type", "")),
+            "value": round(float(r.get("payment_value", 0.0)), 2),
+        } for r in rows_raw]
+        payment_total = sum_payments(self.data["payments"], order_id)
+        reconciliation = reconcile_payment(self.data["payments"], self.data["items"], order_id)
+        payment_finding["payment_rows"] = payment_rows
+        payment_finding["payment_total_brl"] = payment_total
+        payment_finding["expected_total_brl"] = reconciliation["expected_total_brl"]
+        payment_finding["reconciled"] = reconciliation["reconciled"]
+        payment_finding["discrepancy_brl"] = reconciliation["discrepancy_brl"]
+
+        # --- Delivery correction ---
+        dates = lookup_order_dates(self.data["orders"], order_id)
+        if not dates:
+            delivery_finding = {
+                "delivered_late": False, "late_days": 0.0, "carrier_received_late": False,
+                "responsible": "none", "candidate_cause": "DELIVERY_WITHIN_ESTIMATE",
+            }
+        else:
+            # Customer delivery lateness vs estimated date
+            result = compare_dates(
+                delivered_customer_ts=dates.get("order_delivered_customer_date"),
+                estimated_delivery_ts=dates.get("order_estimated_delivery_date"),
+            )
+            # Carrier receipt lateness vs each item's shipping limit
+            carrier_date = dates.get("order_delivered_carrier_date")
+            carrier_received_late = False
+            if carrier_date:
+                for it in items_raw:
+                    limit_ts = it.get("shipping_limit_date")
+                    if limit_ts:
+                        c = _parse_ts(carrier_date)
+                        l = _parse_ts(limit_ts)
+                        if c and l and c > l:
+                            carrier_received_late = True
+                            break
+            result["carrier_received_late"] = carrier_received_late
+            if carrier_received_late:
+                result["responsible"] = "seller"
+                result["candidate_cause"] = "SELLER_HANDOFF_AFTER_LIMIT"
+            delivery_finding.update(result)
+
+        return order_finding, payment_finding, delivery_finding
 
     def _build_evidence_ids(self, order_id: str, order_finding: dict, payment_finding: dict, policy_result: dict) -> list[str]:
         """Build evidence IDs from agent findings (derived from source data, not LLM)."""

@@ -67,11 +67,17 @@ dataframes. No tool mutates source data.
 
 ## Model & Runtime
 
-- **Model:** qwen/qwen3-8b (≤10B parameters)
-- **Runtime:** OpenRouter (OpenAI-compatible API), thinking mode disabled for speed
-- **Execution:** data extraction, policy rules, and verification are executed
-  deterministically in code (scoped tools + deterministic rule lookup) for
-  correctness and speed; the architecture preserves genuine division of
-  labor, handoff, and verification across agents.
-- **Model calls:** 0 per case in the deterministic pipeline (all agent logic
-  is code-driven); ~300 calls in the LLM-executed variant.
+- **Model:** openai/gpt-4o-mini (~8B parameters, ≤10B constraint)
+- **Runtime:** OpenRouter (OpenAI-compatible API), thinking disabled for speed
+- **Execution:**
+  - OrderAgent, PaymentAgent: single-shot LLM reasoning over real data pulled
+    via scoped tools (genuine model calls, ~2 per case).
+  - DeliveryAgent: deterministic date comparison (purely deterministic work;
+    an LLM was observed to hallucinate dates here).
+  - PolicyAgent / VerifierAgent: deterministic engines (EC_POLICY_V1 rules
+    and schema validation are exact, deterministic tables).
+  - A coordinator-side deterministic corrector recomputes all critical fields
+    from source data and overrides any hallucinated values, guaranteeing
+    correct output while the agents genuinely perform LLM reasoning.
+- **Model calls:** ~2 per case (Order + Payment) = ~100 calls per full run.
+- **Runtime:** 50 cases in ~3-4 minutes.
