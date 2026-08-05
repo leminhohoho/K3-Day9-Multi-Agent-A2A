@@ -65,7 +65,7 @@ class OrderAgent(BaseAgent):
         }
         if trace_callback:
             trace_callback(self.name, "llm_call", {"round": 0})
-        content, _ = self.client.chat(
+        content, _, _ = self.client.chat(
             system=self.system_prompt,
             messages=[{"role": "user", "content": json.dumps(context, default=str)}],
             tools=None,

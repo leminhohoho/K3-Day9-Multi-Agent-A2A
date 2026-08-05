@@ -35,7 +35,7 @@ class BaseAgent:
             if trace_callback:
                 trace_callback(self.name, "llm_call", {"round": round_idx})
 
-            content, tool_calls = self.client.chat(
+            content, tool_calls, usage = self.client.chat(
                 system=self.system_prompt,
                 messages=messages,
                 tools=self.tool_defs if self.tool_defs else None,

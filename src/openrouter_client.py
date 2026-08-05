@@ -7,6 +7,16 @@ from src.config import OPENROUTER_BASE_URL, OPENROUTER_API_KEY, MODEL_NAME, MAX_
 class OpenRouterClient:
     """Thin wrapper around OpenRouter's OpenAI-compatible chat completions API."""
 
+    # Class-level cumulative usage across all requests (shared by every
+    # client instance so main.py can read the whole-run total).
+    TOTAL_USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    REQUESTS = 0
+
+    @classmethod
+    def reset_stats(cls):
+        cls.TOTAL_USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        cls.REQUESTS = 0
+
     def __init__(self, max_retries: int = 4):
         self.base_url = OPENROUTER_BASE_URL
         self.api_key = OPENROUTER_API_KEY
@@ -27,9 +37,10 @@ class OpenRouterClient:
         """
         Send a chat completion request.
 
-        Returns (content, tool_calls) where:
+        Returns (content, tool_calls, usage) where:
         - content is the assistant's text response (or "" if only tool calls)
         - tool_calls is a list of {"id": str, "name": str, "arguments": dict} or None
+        - usage is the OpenRouter token-usage dict (prompt/completion/total)
         """
         body = {
             "model": self.model,
@@ -75,6 +86,17 @@ class OpenRouterClient:
 
         data = response.json()
 
+        # Accumulate token usage (OpenRouter returns OpenAI-compatible usage)
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        raw_usage = data.get("usage") or {}
+        usage["prompt_tokens"] = int(raw_usage.get("prompt_tokens", 0))
+        usage["completion_tokens"] = int(raw_usage.get("completion_tokens", 0))
+        usage["total_tokens"] = int(raw_usage.get("total_tokens", 0))
+        OpenRouterClient.TOTAL_USAGE["prompt_tokens"] += usage["prompt_tokens"]
+        OpenRouterClient.TOTAL_USAGE["completion_tokens"] += usage["completion_tokens"]
+        OpenRouterClient.TOTAL_USAGE["total_tokens"] += usage["total_tokens"]
+        OpenRouterClient.REQUESTS += 1
+
         choice = data["choices"][0]
         msg = choice["message"]
         content = msg.get("content", "") or ""
@@ -90,4 +112,4 @@ class OpenRouterClient:
                     "arguments": json.loads(tc["function"]["arguments"]),
                 })
 
-        return content, tool_calls
+        return content, tool_calls, usage
