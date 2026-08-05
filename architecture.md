@@ -2,7 +2,11 @@
 
 ## Pattern
 
-Coordinator + Parallel fan-out (data agents) → Sequential Policy → Sequential Verifier.
+Coordinator + fan-out (data agents) → Sequential Policy → Sequential Verifier.
+
+> Execution note: the three data agents are designed as a parallel fan-out, but
+> for reliability they currently run **sequentially** within each case (avoids
+> OpenRouter 429 rate limits). Role separation and handoff are preserved.
 
 ```
                  ┌──────────────────────────────┐
@@ -10,7 +14,7 @@ Coordinator + Parallel fan-out (data agents) → Sequential Policy → Sequentia
                  │  reads case, orchestrates,    │
                  │  merges, writes output        │
                  └──────────────┬───────────────┘
-                                │ dispatch (parallel)
+                                │ dispatch (fan-out)
         ┌──────────────┬────────┴────────┬──────────────┐
         ▼              ▼                 ▼
   ┌───────────┐  ┌───────────┐    ┌───────────┐
@@ -59,11 +63,19 @@ dataframes. No tool mutates source data.
 
 1. Coordinator loads 9 CSVs into pandas dataframes at startup.
 2. Reads `input/EC_XXX.json`, extracts `claimed_order_id`.
-3. Dispatches OrderAgent, PaymentAgent, DeliveryAgent in parallel (asyncio).
-4. Awaits all three, merges findings into a case context.
-5. Calls PolicyAgent with merged context → decision fields.
-6. Calls VerifierAgent on the candidate output.
-7. On success writes `output/EC_XXX.json`; on failure logs error and writes nothing.
+3. Dispatches OrderAgent, PaymentAgent, DeliveryAgent for the case. They are
+   designed for parallel fan-out (each owns a distinct domain and tool scope),
+   but are **executed sequentially within a case** to avoid OpenRouter 429
+   rate limits on concurrent calls from a shared IP/key.
+4. Merges the three findings into a case context.
+5. Runs a deterministic corrector that recomputes critical fields (dates,
+   totals, reconciliation, lateness) from source data and overrides any values
+   the LLM hallucinated.
+6. Calls PolicyAgent with the merged+corrected context → decision fields.
+7. Calls VerifierAgent on the candidate output (deterministic schema/format
+   validation).
+8. On success writes `output/EC_XXX.json`; on failure logs error and writes
+   nothing.
 
 ## Model & Runtime
 
