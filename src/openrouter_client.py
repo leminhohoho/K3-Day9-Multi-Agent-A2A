@@ -1,6 +1,6 @@
 import json
 import httpx
-from src.config import OPENROUTER_BASE_URL, OPENROUTER_API_KEY, MODEL_NAME, MAX_TOKENS, TEMPERATURE
+from src.config import OPENROUTER_BASE_URL, OPENROUTER_API_KEY, MODEL_NAME, MAX_TOKENS, TEMPERATURE, REASONING_EFFORT
 
 
 class OpenRouterClient:
@@ -34,6 +34,7 @@ class OpenRouterClient:
             "messages": [{"role": "system", "content": system}] + messages,
             "max_tokens": MAX_TOKENS,
             "temperature": TEMPERATURE,
+            "reasoning": {"effort": REASONING_EFFORT},
         }
         if tools:
             body["tools"] = tools

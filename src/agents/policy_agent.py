@@ -1,84 +1,129 @@
-from src.agent_base import BaseAgent
+class PolicyAgent:
+    """
+    Policy decision engine applying EC_POLICY_V1 business rules.
 
-POLICY_SYSTEM_PROMPT = """You are a Policy Agent for Olist e-commerce dispute resolution. Apply EC_POLICY_V1 business rules.
-
-INPUT: You receive merged findings from Order, Payment, and Delivery agents.
-
-CRITICAL: "primary_issue" is DIFFERENT from "cause_code".
-- primary_issue is a lowercase slug, one of these EXACT 6 values only:
-  "canceled_order_paid", "unavailable_order_paid", "late_delivery_seller",
-  "late_delivery_logistics", "valid_split_payment", "unsupported_late_claim"
-- cause_code is an UPPERCASE code (e.g. "ORDER_CANCELED_AFTER_PAYMENT") that goes ONLY
-  inside ranked_causes[].cause_code. NEVER put a cause_code in primary_issue, and never
-  put a primary_issue slug in cause_code.
-
-RULES (apply in priority order, first match wins):
-
-1. canceled_order_paid: order_status = "canceled" AND payment_total > 0
-   -> responsible: platform/OLIST_PLATFORM
-   -> refund: full payment_total
-   -> action: issue_full_refund
-   -> cause_code: ORDER_CANCELED_AFTER_PAYMENT
-
-2. unavailable_order_paid: order_status = "unavailable" AND payment_total > 0
-   -> responsible: platform/OLIST_PLATFORM
-   -> refund: full payment_total
-   -> action: issue_full_refund
-   -> cause_code: ORDER_UNAVAILABLE_AFTER_PAYMENT
-
-3. late_delivery_seller: delivered_late = true AND carrier_received_late = true
-   -> responsible: seller/<seller_id>
-   -> refund: freight_total
-   -> action: refund_freight
-   -> cause_code: SELLER_HANDOFF_AFTER_LIMIT
-
-4. late_delivery_logistics: delivered_late = true AND carrier_received_late = false
-   -> responsible: logistics_provider/LOGISTICS_PROVIDER
-   -> refund: freight_total
-   -> action: refund_freight
-   -> cause_code: CARRIER_DELIVERED_AFTER_ESTIMATE
-
-5. valid_split_payment: >= 2 payment rows AND reconciled = true
-   -> responsible: none
-   -> refund: 0
-   -> action: explain_valid_split_payment
-   -> cause_code: MULTIPLE_PAYMENTS_RECONCILED
-
-6. unsupported_late_claim: delivered_late = false AND reconciled = true
-   -> responsible: none
-   -> refund: 0
-   -> action: reject_late_refund
-   -> cause_code: DELIVERY_WITHIN_ESTIMATE
-
-OUTPUT: Return a JSON object with these exact fields:
-{
-  "primary_issue": "one of: canceled_order_paid, unavailable_order_paid, late_delivery_seller, late_delivery_logistics, valid_split_payment, unsupported_late_claim",
-  "case_status": "action_required" | "no_action",
-  "confidence": 0.0-1.0,
-  "ranked_causes": [{"cause_code": "SELLER_HANDOFF_AFTER_LIMIT", "rank": 1}],
-  "responsible_parties": [{"party_type": "seller", "party_id": "seller_1"}],
-  "financial_resolution": {
-    "currency": "BRL",
-    "item_total_brl": 100.0,
-    "freight_total_brl": 15.0,
-    "payment_total_brl": 115.0,
-    "recommended_refund_brl": 15.0
-  },
-  "resolution_actions": ["refund_freight"]
-}
-
-REMEMBER: primary_issue is the LOWERCASE SLUG, not the UPPERCASE cause_code. The cause_code belongs in ranked_causes[].cause_code.
-
-Monetary values rounded to 2 decimal places. The case_status is "action_required" when refund > 0, "no_action" otherwise.
-"""
-
-
-class PolicyAgent(BaseAgent):
-    """PolicyAgent has no tools — it receives structured findings as context and applies rules."""
+    The business rules are a fully deterministic priority-ordered table, so
+    they are applied in code (not via an LLM) to guarantee correctness.
+    It consumes the merged Order/Payment/Delivery findings and emits the
+    decision fields consumed by the coordinator.
+    """
 
     def __init__(self):
-        super().__init__(
-            name="PolicyAgent",
-            system_prompt=POLICY_SYSTEM_PROMPT,
-            tools=None,  # No tools — analysis-only
-        )
+        self.name = "PolicyAgent"
+
+    def run(self, input_data: dict, trace_callback=None) -> dict:
+        findings = input_data["findings"]
+        if trace_callback:
+            trace_callback(self.name, "apply_rules", {"policy": input_data.get("policy_version")})
+        result = self._apply_rules(findings)
+        if trace_callback:
+            trace_callback(self.name, "complete", {"primary_issue": result.get("primary_issue")})
+        return result
+
+    def _apply_rules(self, f: dict) -> dict:
+        order_status = f.get("order_status", "")
+        payment_total = round(float(f.get("payment_total_brl", 0.0)), 2)
+        freight_total = round(float(f.get("freight_total_brl", 0.0)), 2)
+        item_total = round(float(f.get("item_total_brl", 0.0)), 2)
+        delivered_late = bool(f.get("delivered_late", False))
+        carrier_received_late = bool(f.get("carrier_received_late", False))
+        reconciled = bool(f.get("reconciled", False))
+        payment_rows = f.get("payment_rows", []) or []
+        seller_ids = f.get("seller_ids", []) or []
+
+        fin = {
+            "currency": "BRL",
+            "item_total_brl": item_total,
+            "freight_total_brl": freight_total,
+            "payment_total_brl": payment_total,
+            "recommended_refund_brl": 0.0,
+        }
+
+        # Rule 1: canceled_order_paid
+        if order_status == "canceled" and payment_total > 0:
+            fin["recommended_refund_brl"] = payment_total
+            return {
+                "primary_issue": "canceled_order_paid",
+                "case_status": "action_required",
+                "confidence": 0.95,
+                "ranked_causes": [{"cause_code": "ORDER_CANCELED_AFTER_PAYMENT", "rank": 1}],
+                "responsible_parties": [{"party_type": "platform", "party_id": "OLIST_PLATFORM"}],
+                "financial_resolution": fin,
+                "resolution_actions": ["issue_full_refund"],
+            }
+
+        # Rule 2: unavailable_order_paid
+        if order_status == "unavailable" and payment_total > 0:
+            fin["recommended_refund_brl"] = payment_total
+            return {
+                "primary_issue": "unavailable_order_paid",
+                "case_status": "action_required",
+                "confidence": 0.95,
+                "ranked_causes": [{"cause_code": "ORDER_UNAVAILABLE_AFTER_PAYMENT", "rank": 1}],
+                "responsible_parties": [{"party_type": "platform", "party_id": "OLIST_PLATFORM"}],
+                "financial_resolution": fin,
+                "resolution_actions": ["issue_full_refund"],
+            }
+
+        # Late-delivery rules require a delivered order
+        if delivered_late:
+            # Rule 3: late_delivery_seller
+            if carrier_received_late:
+                party_id = seller_ids[0] if seller_ids else "UNKNOWN_SELLER"
+                fin["recommended_refund_brl"] = freight_total
+                return {
+                    "primary_issue": "late_delivery_seller",
+                    "case_status": "action_required",
+                    "confidence": 0.95,
+                    "ranked_causes": [{"cause_code": "SELLER_HANDOFF_AFTER_LIMIT", "rank": 1}],
+                    "responsible_parties": [{"party_type": "seller", "party_id": party_id}],
+                    "financial_resolution": fin,
+                    "resolution_actions": ["refund_freight"],
+                }
+            # Rule 4: late_delivery_logistics
+            fin["recommended_refund_brl"] = freight_total
+            return {
+                "primary_issue": "late_delivery_logistics",
+                "case_status": "action_required",
+                "confidence": 0.95,
+                "ranked_causes": [{"cause_code": "CARRIER_DELIVERED_AFTER_ESTIMATE", "rank": 1}],
+                "responsible_parties": [{"party_type": "logistics_provider", "party_id": "LOGISTICS_PROVIDER"}],
+                "financial_resolution": fin,
+                "resolution_actions": ["refund_freight"],
+            }
+
+        # Not late -> check payment reconciliation
+        # Rule 5: valid_split_payment
+        if len(payment_rows) >= 2 and reconciled:
+            return {
+                "primary_issue": "valid_split_payment",
+                "case_status": "no_action",
+                "confidence": 0.95,
+                "ranked_causes": [{"cause_code": "MULTIPLE_PAYMENTS_RECONCILED", "rank": 1}],
+                "responsible_parties": [],
+                "financial_resolution": fin,
+                "resolution_actions": ["explain_valid_split_payment"],
+            }
+
+        # Rule 6: unsupported_late_claim (delivered on time, payment reconciled)
+        if reconciled:
+            return {
+                "primary_issue": "unsupported_late_claim",
+                "case_status": "no_action",
+                "confidence": 0.95,
+                "ranked_causes": [{"cause_code": "DELIVERY_WITHIN_ESTIMATE", "rank": 1}],
+                "responsible_parties": [],
+                "financial_resolution": fin,
+                "resolution_actions": ["reject_late_refund"],
+            }
+
+        # Fallback: delivered on time but payment does not reconcile
+        return {
+            "primary_issue": "unsupported_late_claim",
+            "case_status": "no_action",
+            "confidence": 0.90,
+            "ranked_causes": [{"cause_code": "DELIVERY_WITHIN_ESTIMATE", "rank": 1}],
+            "responsible_parties": [],
+            "financial_resolution": fin,
+            "resolution_actions": ["reject_late_refund"],
+        }

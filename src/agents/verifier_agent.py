@@ -55,27 +55,12 @@ class VerifierAgent(BaseAgent):
 
     def run(self, input_data: dict, trace_callback=None) -> dict:
         candidate = input_data["candidate"]
-        # First pass: deterministic validations before LLM call
+        # Deterministic schema/format validation (no LLM needed — all checks
+        # are exact rules on limits, formats, and rounding).
         self._validate_deterministic(candidate)
-        # Second pass: LLM-based validation for nuanced checks
-        result = super().run(input_data, trace_callback)
-
-        # Unwrap the LLM's {valid, errors, candidate} envelope if present
-        if isinstance(result, dict) and "valid" in result:
-            if result.get("valid") is False:
-                errors = result.get("errors", ["Unknown validation error"])
-                raise VerifierError("; ".join(errors))
-            result = result.get("candidate", result)
-
-        # Ensure only schema fields survive (strip hallucinated extras)
-        allowed = {
-            "case_id", "assessment", "affected_entities",
-            "root_cause_analysis", "evidence_ids",
-            "financial_resolution", "resolution_actions",
-        }
-        result = {k: v for k, v in result.items() if k in allowed}
-
-        return result
+        if trace_callback:
+            trace_callback(self.name, "complete", {"valid": True})
+        return candidate
 
     def _validate_deterministic(self, candidate: dict):
         """Run deterministic checks that don't need an LLM."""

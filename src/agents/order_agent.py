@@ -1,56 +1,71 @@
 from src.agent_base import BaseAgent
-from src.tools.order_tools import ORDER_TOOL_DEFS, ORDER_TOOL_MAP
-
-ORDER_SYSTEM_PROMPT = """You are an Order & Seller Data Agent for Olist e-commerce dispute resolution.
-
-Your job: given an order_id, investigate the order's status, items, sellers, and financial totals.
-
-TOOLS:
-- lookup_order: get order metadata (status, purchase/approval/delivery timestamps)
-- lookup_items: get all items (product_id, seller_id, price, freight, shipping_limit_date)
-- lookup_sellers: get unique seller IDs for this order
-- sum_item_totals: compute sum of item prices and freight values
-
-PROCEDURE:
-1. Call lookup_order to get the order status and timestamps.
-2. Call lookup_items to get all items and their details.
-3. Call lookup_sellers to identify all sellers.
-4. Call sum_item_totals to compute financial totals.
-
-OUTPUT: Return a JSON object with these exact fields:
-{
-  "order_status": "string",
-  "purchase_ts": "string or null",
-  "approved_ts": "string or null",
-  "delivered_carrier_ts": "string or null",
-  "delivered_customer_ts": "string or null",
-  "estimated_delivery_ts": "string or null",
-  "items": [{"item_id": 1, "seller_id": "s1", "price": 58.90, "freight_value": 13.29, "shipping_limit_ts": "..."}],
-  "sellers": ["seller_id1"],
-  "item_total_brl": 58.90,
-  "freight_total_brl": 13.29
-}
-
-If the order has no items, set items=[], sellers=[], item_total_brl=0.0, freight_total_brl=0.0.
-If timestamps are null/missing, set them to null.
-"""
+from src.tools.order_tools import lookup_order, lookup_items, lookup_sellers, sum_item_totals
 
 
 class OrderAgent(BaseAgent):
+    """
+    Order & Seller Data Agent.
+
+    Retrieves order data deterministically from the scoped tools (no LLM
+    required for data extraction), then formats the finding.
+    """
+
     def __init__(self, data: dict):
         self.data = data
         super().__init__(
             name="OrderAgent",
-            system_prompt=ORDER_SYSTEM_PROMPT,
-            tools=ORDER_TOOL_DEFS,
+            system_prompt="",
+            tools=None,
         )
 
-    def _execute_tool(self, name: str, args: dict) -> dict:
-        fn = ORDER_TOOL_MAP.get(name)
-        if not fn:
-            return {"error": f"Unknown tool: {name}"}
-        if name == "lookup_order":
-            return fn(self.data["orders"], args["order_id"])
-        elif name in ("lookup_items", "lookup_sellers", "sum_item_totals"):
-            return fn(self.data["items"], args["order_id"])
-        return {"error": f"Unhandled tool: {name}"}
+    def run(self, input_data: dict, trace_callback=None) -> dict:
+        order_id = input_data["order_id"]
+        if trace_callback:
+            trace_callback(self.name, "query", {"order_id": order_id})
+
+        # Look up order metadata
+        order = lookup_order(self.data["orders"], order_id)
+        if order.get("error") == "not_found":
+            return {
+                "order_status": "unknown",
+                "purchase_ts": None,
+                "approved_ts": None,
+                "delivered_carrier_ts": None,
+                "delivered_customer_ts": None,
+                "estimated_delivery_ts": None,
+                "items": [],
+                "sellers": [],
+                "item_total_brl": 0.0,
+                "freight_total_brl": 0.0,
+            }
+
+        # Items
+        items_raw = lookup_items(self.data["items"], order_id)
+        items = []
+        for it in items_raw:
+            items.append({
+                "item_id": int(it.get("order_item_id", 0)),
+                "seller_id": str(it.get("seller_id", "")),
+                "price": round(float(it.get("price", 0.0)), 2),
+                "freight_value": round(float(it.get("freight_value", 0.0)), 2),
+                "shipping_limit_ts": str(it.get("shipping_limit_date", "")) or None,
+            })
+
+        sellers = lookup_sellers(self.data["items"], order_id)
+        totals = sum_item_totals(self.data["items"], order_id)
+
+        if trace_callback:
+            trace_callback(self.name, "complete", {"items": len(items), "sellers": len(sellers)})
+
+        return {
+            "order_status": str(order.get("order_status", "unknown")),
+            "purchase_ts": str(order.get("order_purchase_timestamp", "")) or None,
+            "approved_ts": str(order.get("order_approved_at", "")) or None,
+            "delivered_carrier_ts": str(order.get("order_delivered_carrier_date", "")) or None,
+            "delivered_customer_ts": str(order.get("order_delivered_customer_date", "")) or None,
+            "estimated_delivery_ts": str(order.get("order_estimated_delivery_date", "")) or None,
+            "items": items,
+            "sellers": sellers,
+            "item_total_brl": totals["item_total_brl"],
+            "freight_total_brl": totals["freight_total_brl"],
+        }
