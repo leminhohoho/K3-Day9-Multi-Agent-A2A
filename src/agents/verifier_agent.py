@@ -24,8 +24,7 @@ VALIDATION RULES:
    - payment:<order_id>:<payment_sequential>
    - seller:<seller_id>
    - policy:<root_cause_code>
-8. All monetary values must be rounded to 2 decimal places
-9. case_status must be "action_required" or "no_action"
+8. case_status must be "action_required" or "no_action"
 
 INPUT: {"candidate": {...}, "order_id": "..."}
 
@@ -86,6 +85,13 @@ class VerifierAgent(BaseAgent):
         conf = candidate.get("assessment", {}).get("confidence", -1)
         if not (0 <= conf <= 1):
             errors.append(f"confidence {conf} out of range [0, 1]")
+
+        # monetary rounding: all BRL values should be rounded to 2 decimals
+        fin = candidate.get("financial_resolution", {})
+        for key in ("item_total_brl", "freight_total_brl", "payment_total_brl", "recommended_refund_brl"):
+            val = fin.get(key, 0.0)
+            if isinstance(val, float) and round(val, 2) != val:
+                errors.append(f"financial_resolution.{key} must be rounded to 2 decimal places (current value: {val})")
 
         # entity limits
         entities = candidate.get("affected_entities", {})
