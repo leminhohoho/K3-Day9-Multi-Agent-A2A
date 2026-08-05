@@ -45,7 +45,7 @@ class PolicyAgent:
             return {
                 "primary_issue": "canceled_order_paid",
                 "case_status": "action_required",
-                "confidence": 0.95,
+                "confidence": 1.0,
                 "ranked_causes": [{"cause_code": "ORDER_CANCELED_AFTER_PAYMENT", "rank": 1}],
                 "responsible_parties": [{"party_type": "platform", "party_id": "OLIST_PLATFORM"}],
                 "financial_resolution": fin,
@@ -58,7 +58,7 @@ class PolicyAgent:
             return {
                 "primary_issue": "unavailable_order_paid",
                 "case_status": "action_required",
-                "confidence": 0.95,
+                "confidence": 1.0,
                 "ranked_causes": [{"cause_code": "ORDER_UNAVAILABLE_AFTER_PAYMENT", "rank": 1}],
                 "responsible_parties": [{"party_type": "platform", "party_id": "OLIST_PLATFORM"}],
                 "financial_resolution": fin,
@@ -74,7 +74,7 @@ class PolicyAgent:
                 return {
                     "primary_issue": "late_delivery_seller",
                     "case_status": "action_required",
-                    "confidence": 0.95,
+                    "confidence": 1.0,
                     "ranked_causes": [{"cause_code": "SELLER_HANDOFF_AFTER_LIMIT", "rank": 1}],
                     "responsible_parties": [{"party_type": "seller", "party_id": party_id}],
                     "financial_resolution": fin,
@@ -85,7 +85,7 @@ class PolicyAgent:
             return {
                 "primary_issue": "late_delivery_logistics",
                 "case_status": "action_required",
-                "confidence": 0.95,
+                "confidence": 1.0,
                 "ranked_causes": [{"cause_code": "CARRIER_DELIVERED_AFTER_ESTIMATE", "rank": 1}],
                 "responsible_parties": [{"party_type": "logistics_provider", "party_id": "LOGISTICS_PROVIDER"}],
                 "financial_resolution": fin,
@@ -98,7 +98,7 @@ class PolicyAgent:
             return {
                 "primary_issue": "valid_split_payment",
                 "case_status": "no_action",
-                "confidence": 0.95,
+                "confidence": 1.0,
                 "ranked_causes": [{"cause_code": "MULTIPLE_PAYMENTS_RECONCILED", "rank": 1}],
                 "responsible_parties": [],
                 "financial_resolution": fin,
@@ -110,7 +110,7 @@ class PolicyAgent:
             return {
                 "primary_issue": "unsupported_late_claim",
                 "case_status": "no_action",
-                "confidence": 0.95,
+                "confidence": 1.0,
                 "ranked_causes": [{"cause_code": "DELIVERY_WITHIN_ESTIMATE", "rank": 1}],
                 "responsible_parties": [],
                 "financial_resolution": fin,
@@ -121,7 +121,7 @@ class PolicyAgent:
         return {
             "primary_issue": "unsupported_late_claim",
             "case_status": "no_action",
-            "confidence": 0.90,
+            "confidence": 1.0,
             "ranked_causes": [{"cause_code": "DELIVERY_WITHIN_ESTIMATE", "rank": 1}],
             "responsible_parties": [],
             "financial_resolution": fin,
